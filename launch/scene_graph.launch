@@ -1,0 +1,4 @@
+<launch>
+    <!-- <node name="scene_graph" pkg="scene_graph" type="room_classification.py" output="screen"> </node> -->
+    <node pkg="scene_graph" name="ros_mseg_node.py" type="ros_mseg_node.py" output="screen"> </node>
+</launch>

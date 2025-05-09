@@ -172,9 +172,12 @@ class RoomClassificationNode:
         input_vector = np.array(input_vector)
         
         predicted_label = self.rf_classifier.predict(input_vector)
-        predicted_room = self.label_encoder.inverse_transform(predicted_label)
         
-        return predicted_room[0]
+        # DEBUG
+        print('predicted label:', predicted_label[0])
+        print('predicted room:', classification_utils.room_classes[predicted_label[0]][1])
+        
+        return classification_utils.room_classes[predicted_label[0]][1]
     
     
     def get_object_2d_position(self, object):

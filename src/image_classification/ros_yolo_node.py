@@ -27,7 +27,7 @@ class YOLOv9SegNode:
 
         # Load YOLOv9 model
         self.model = YOLO('yolov9e-seg.pt')
-        self.model.to('cuda')
+        # self.model.to('cuda')
         # self.model.eval()
         self.n = 0
         self.in_cb = False
@@ -45,7 +45,7 @@ class YOLOv9SegNode:
         self.odom_sub = message_filters.Subscriber('/odom', Odometry)
         
         # Approximate Time Synchronizer allows slight time differences between topics
-        ts = message_filters.ApproximateTimeSynchronizer([self.image_sub, self.depth_sub, self.odom_sub], queue_size=100, slop=0.03)
+        ts = message_filters.ApproximateTimeSynchronizer([self.image_sub, self.depth_sub, self.odom_sub], queue_size=100, slop=0.1)
         ts.registerCallback(self.synchronized_callback)
 
         # Publisher for the segmented image
@@ -101,7 +101,7 @@ class YOLOv9SegNode:
                 class_name = result.names[class_id]
                 confidence = box.conf.item()
                 
-                if confidence > 0.7:
+                if confidence > 0.6:
                     x1, y1, x2, y2 = box.xyxy[0][0].item(), box.xyxy[0][1].item(), box.xyxy[0][2].item(), box.xyxy[0][3].item()
                     print(f"Class: {class_name}, Confidence: {confidence}, Coordinates: ({x1}, {y1}), ({x2}, {y2})")
                     

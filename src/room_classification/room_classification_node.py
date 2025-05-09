@@ -2,17 +2,15 @@
 
 import rospy
 from std_msgs.msg import String
-from scene_graph.msg import GraphObjects, RoomPolygonList, ClassifiedRoom, ClassifiedRooms, RoomWithObjects
+from scene_graph.msg import ClassifiedRoom, RoomWithObjects
 import time
 import classification_utils
-from sklearn.ensemble import RandomForestClassifier
 import numpy as np
+import pickle
 
 class RoomClassificationNode:
     
     def __init__(self) -> None:
-        # self.rooms_sub = rospy.Subscriber('/scene_graph/rooms', RoomPolygonList, self.rooms_callback)
-        # self.objects_sub = rospy.Subscriber('scene_graph/graph_objects', GraphObjects, self.objects_callback)
         self.room_with_objects_sub = rospy.Subscriber('/scene/graph/room_with_objects', RoomWithObjects, self.room_with_objects_callback)
         
         self.classified_room_pub = rospy.Publisher('/scene_graph/classified_room', ClassifiedRoom, queue_size=10)
@@ -22,11 +20,12 @@ class RoomClassificationNode:
         
         self.object_occurrences_in_rooms = []
         
-        self.rf_classifier = RandomForestClassifier(n_estimators=400, max_depth=10, random_state=42)
-        X_train, y_train, self.label_encoder = classification_utils.get_train_dataset()
-        self.rf_classifier.fit(X_train, y_train)
+        # TODO: set your own path to model file
+        with open('/home/ros/catkin_ws/src/scene_graph_room_classification/src/room_classification/rf_classifier.pkl', 'rb') as f:
+            self.rf_classifier = pickle.load(f)
         
-        print('model fitted')
+        # DEBUG
+        print('model loaded')
         self.configured = True
         
         self.mpcat40_mapping = {
@@ -111,10 +110,6 @@ class RoomClassificationNode:
             "hair drier": "misc",
             "toothbrush": "misc"
         }
-         
-        
-    # def rooms_callback(self, msg):
-    #     self.rooms = msg
         
     
     def room_with_objects_callback(self, msg):
@@ -224,7 +219,6 @@ class RoomClassificationNode:
 
         return inside
 
-    
     
 if __name__ == '__main__':
     rospy.init_node('room_classification_node')

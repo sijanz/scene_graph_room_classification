@@ -293,6 +293,8 @@ void synchronized_callback(const sensor_msgs::ImageConstPtr& image,
     cloud_out = *depth_image;  // Copy the header and other metadata
 
     // Use PointCloud2 iterators to modify the data in the cloud
+
+    ROS_INFO("converting to global frame...");
     sensor_msgs::PointCloud2Iterator<float> iter_x(cloud_out, "x");
     sensor_msgs::PointCloud2Iterator<float> iter_y(cloud_out, "y");
     sensor_msgs::PointCloud2Iterator<float> iter_z(cloud_out, "z");
@@ -329,6 +331,7 @@ void synchronized_callback(const sensor_msgs::ImageConstPtr& image,
     scene_graph::GraphObjects graph_objects{};
     graph_objects.header.stamp = ros::Time::now();
 
+    ROS_INFO("processing detected objects...");
     int i = 0;
     for (const auto& detected_object : detected_objects->objects) {
 
@@ -343,11 +346,21 @@ void synchronized_callback(const sensor_msgs::ImageConstPtr& image,
 
         for (auto y = static_cast<int>(detected_object.bounding_box.at(0).y); y < static_cast<int>(detected_object.bounding_box.at(1).y); ++y) {
             for (auto x = static_cast<int>(detected_object.bounding_box.at(0).x); x < static_cast<int>(detected_object.bounding_box.at(1).x); ++x) {
+                
+                // check if variables are not out of bounds
+                if (y < 0 || y >= image->height || x < 0 || x >= image->width)
+                    continue;
 
                 if (!isPointInPolygon(detected_object.segment, x, y))
                     continue;
 
                 int array_position{static_cast<int>(y * image->width + x)};
+
+                // Add bounds check for array_position
+                if (array_position < 0 || array_position >= static_cast<int>(cloud_out.width * cloud_out.height)) {
+                    ROS_WARN_STREAM("array_position out of bounds: " << array_position << " max: " << (cloud_out.width * cloud_out.height));
+                    continue;
+                }
 
                 sensor_msgs::PointCloud2ConstIterator<float> iter_x{cloud_out, "x"};
                 sensor_msgs::PointCloud2ConstIterator<float> iter_y{cloud_out, "y"};
@@ -393,7 +406,7 @@ void synchronized_callback(const sensor_msgs::ImageConstPtr& image,
         ++i;
     }
 
-
+    ROS_INFO("publishing graph objects...");
     graph_objects_pub.publish(graph_objects);
 
     // // LOG

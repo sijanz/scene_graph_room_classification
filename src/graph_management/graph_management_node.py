@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import rospy
 import networkx as nx
@@ -12,6 +12,7 @@ from std_msgs.msg import String, Int32, Bool
 import pickle
 import time
 from shapely.geometry import Polygon
+import json
 
 
 class BuildingNode:
@@ -255,6 +256,8 @@ class GraphManagementNode:
 
         rospy.loginfo(f'[NODES]: {len(self.scene_graph.nodes)}')
         rospy.loginfo(f'[TIMIMG]: {time.time() - start_time}')
+        
+        self.export_scene_graph_to_json("/sgrc_ws/scene_graph_export.json")
 
         self.graph_lock = False
 
@@ -1114,6 +1117,104 @@ class GraphManagementNode:
                     return True
                 
         return False
+    
+    def export_scene_graph_to_json(self, filename):
+        """
+        Export the current scene graph to a JSON file matching the ground_truth_nyu40class.json format.
+        """
+        # Find building node
+        building_node = None
+        for node in self.scene_graph.nodes:
+            data = self.scene_graph.nodes[node].get('data')
+            if isinstance(data, BuildingNode):
+                building_node = data
+                break
+
+        building = {
+            "id": f"building_{building_node.id if building_node else '-'}",
+            "label": "-",
+            "bounding_box": {
+                "min_corner": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "max_corner": {"x": 0.0, "y": 0.0, "z": 0.0}
+            },
+            "floors": []
+        }
+
+        # Only one floor for simplicity
+        floor = {
+            "id": "floor_0",
+            "parent_id": building["id"],
+            "label": "-",
+            "centroide": {"x": building_node.center_point[0], "y": building_node.center_point[1], "z": 0.0},
+            "bounding_box": {
+                "min_corner": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "max_corner": {"x": 0.0, "y": 0.0, "z": 0.0}
+            },
+            "rooms": []
+        }
+
+        # Collect rooms
+        for node in self.scene_graph.nodes:
+            data = self.scene_graph.nodes[node].get('data')
+            if isinstance(data, RoomNode):
+                room = {
+                    "id": f"room_{data.id}",
+                    "parent_id": floor["id"],
+                    "label": data.class_id,
+                    "centroide": {
+                        "x": data.center_point[0],
+                        "y": data.center_point[1],
+                        "z": 0.0
+                    },
+                    "bounding_box": {
+                        "min_corner": {"x": 0.0, "y": 0.0, "z": 0.0},
+                        "max_corner": {"x": 0.0, "y": 0.0, "z": 0.0}
+                    },
+                    "objects": []
+                }
+                # Collect objects in this room
+                for neighbor in self.scene_graph.neighbors(node):
+                    obj_data = self.scene_graph.nodes[neighbor].get('data')
+                    if isinstance(obj_data, ObjectNode):
+                        obj = {
+                            "id": f"obj_{obj_data.id}",
+                            "parent_id": room["id"],
+                            "semantic_label": obj_data.class_id,
+                            "confidence": 1.0,
+                            "centroide": {
+                                "x": (obj_data.bounding_box[0].x + obj_data.bounding_box[1].x) / 2,
+                                "y": (obj_data.bounding_box[0].y + obj_data.bounding_box[1].y) / 2,
+                                "z": (obj_data.bounding_box[0].z + obj_data.bounding_box[1].z) / 2
+                            },
+                            "bounding_box": {
+                                "min_corner": {
+                                    "x": obj_data.bounding_box[0].x,
+                                    "y": obj_data.bounding_box[0].y,
+                                    "z": obj_data.bounding_box[0].z
+                                },
+                                "max_corner": {
+                                    "x": obj_data.bounding_box[1].x,
+                                    "y": obj_data.bounding_box[1].y,
+                                    "z": obj_data.bounding_box[1].z
+                                }
+                            },
+                            "attributes": []
+                        }
+                        room["objects"].append(obj)
+                floor["rooms"].append(room)
+
+        building["floors"].append(floor)
+
+        scene_graph_json = {
+            "scene_id": "generated_scene",
+            "method_name": "GraphManagementNode_Export",
+            "building": building
+        }
+
+        with open(filename, "w") as f:
+            json.dump(scene_graph_json, f, indent=2)
+        rospy.loginfo(f"Scene graph exported to {filename}")
+
     
     
 if __name__ == '__main__':

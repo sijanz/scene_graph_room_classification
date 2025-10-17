@@ -129,7 +129,6 @@ class GraphManagementNode:
                                         continue
                                     
                                     if (self.is_object_in_room(self.get_object_2d_position(self.scene_graph.nodes[object_node]['data']),  self.scene_graph.nodes[room_node]['data'].polygon)):
-                                        # print(f'object {object_node} is in room {room_node}')
                                         object_id = self.scene_graph.nodes[object_node]['data'].id
                                         self.scene_graph.add_edge(room_node, object_id)
                                         break
@@ -152,7 +151,6 @@ class GraphManagementNode:
                                 
                         if not has_edge:
                             
-                            print(object_node, self.scene_graph.nodes[object_node]['data'].class_id, 'has no edge')
                             min = np.inf
                             min_node = 0
                             
@@ -164,7 +162,6 @@ class GraphManagementNode:
                                             min_node = room_node
                                         
                             self.scene_graph.add_edge(min_node, object_node)
-                            print('adding edge', object_node, min_node)
                         
 
             self.publish_markers()
@@ -257,7 +254,7 @@ class GraphManagementNode:
         rospy.loginfo(f'[NODES]: {len(self.scene_graph.nodes)}')
         rospy.loginfo(f'[TIMIMG]: {time.time() - start_time}')
         
-        self.export_scene_graph_to_json("/sgrc_ws/scene_graph_export.json")
+        # self.export_scene_graph_to_json("/sgrc_ws/scene_graph_export.json")
 
         self.graph_lock = False
 
@@ -272,8 +269,6 @@ class GraphManagementNode:
                 
         bounding_boxes = []
         nodes = list(self.scene_graph.nodes)
-        
-        # print()
         
         for node in nodes:
             if node in self.scene_graph and 'data' in self.scene_graph.nodes[node]:
@@ -774,7 +769,6 @@ class GraphManagementNode:
         for object_node in nodes:
             if object_node in self.scene_graph and 'data' in self.scene_graph.nodes[object_node]:
                 if type(self.scene_graph.nodes[object_node]['data']) is ObjectNode:
-                    print('processing object', object_node)
                     min = np.inf
                     min_node = 0
                     for room_node in nodes:
@@ -802,51 +796,6 @@ class GraphManagementNode:
         Returns:
         True if the point is inside the polygon, False otherwise.
         """
-        # x, y = point
-        # n = len(polygon)
-        # inside = False
-        
-        # min_x = np.inf
-        # min_y = np.inf
-        # max_x = -np.inf
-        # max_y = -np.inf
-        
-        # for point in polygon:
-        #     if point.x < min_x:
-        #         min_x = point.x
-        #     if point.y < min_y:
-        #         min_y = point.y
-        #     if point.x > max_x:
-        #         max_x = point.x
-        #     if point.y > max_y:
-        #         max_y = point.y
-                
-        # print(min_x, max_x, min_y, max_y)
-                
-        # if min_x < x < max_x and min_y < y < max_y:
-        #     return True
-        # else:
-        #     return False
-
-        # p1x, p1y = polygon[0]
-        # p1x = polygon[0].x
-        # p1y = polygon[0].y
-        # for i in range(n + 1):
-        #     # p2x, p2y = polygon[i % n]
-            
-        #     p2x = polygon[i % n].x
-        #     p2y = polygon[i % n].y
-            
-        #     if y > min(p1y, p2y):
-        #         if y <= max(p1y, p2y):
-        #             if x <= max(p1x, p2x):
-        #                 if p1y != p2y:
-        #                     xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-        #                 if p1x == p2x or x <= xinters:
-        #                     inside = not inside
-        #     p1x, p1y = p2x, p2y
-
-        # return inside
         
         point = Point32(point[0], point[1], 0.0)
         

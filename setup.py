@@ -25,7 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'image_segmentation_node = scene_graph_room_classification.image_segmentation.image_segmentation_node:main',
-            '3d_object_localization_node = scene_graph_room_classification.3d_object_localization.3d_object_localization_node:main',
+            'object_localization_node = scene_graph_room_classification.object_localization.object_localization_node:main',
             'scene_graph_fusion_node = scene_graph_room_classification.scene_graph_fusion.scene_graph_fusion_node:main'
         ],
     },

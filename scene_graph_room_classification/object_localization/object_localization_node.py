@@ -1,10 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 import rclpy
 from rclpy.node import Node
-
 import numpy as np
-
 from sensor_msgs.msg import Image, PointCloud2
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Point32
@@ -12,8 +10,7 @@ from sensor_msgs_py import point_cloud2 as pc2
 from scipy.spatial.transform import Rotation as R
 import message_filters
 from shapely.geometry import Point, Polygon
-from scene_graph.msg import DetectedObjects, GraphObjects, GraphObject
-
+from scene_graph_interfaces.msg import DetectedObjects, GraphObjects, GraphObject
 import time
 
 
@@ -237,9 +234,10 @@ def rotate_and_transform_points_vectorized(points_array, pose):
     return points_array
 
 
-class ObjectLocationNode(Node):
+class ObjectLocalizationNode(Node):
     def __init__(self):
-        super().__init__('object_location_node')
+        
+        super().__init__('object_localization_node')
         
         # Create publishers
         self.debug_image_pub = self.create_publisher(
@@ -270,8 +268,7 @@ class ObjectLocationNode(Node):
         )
         self.ts.registerCallback(self.synchronized_callback)
         
-        self.get_logger().info('Object Location Node initialized')
-    
+
     def synchronized_callback(self, image, depth_cloud, pose, detected_objects):
         """
         Callback for synchronized sensor data
@@ -282,7 +279,8 @@ class ObjectLocationNode(Node):
             pose: nav_msgs/Odometry
             detected_objects: scene_graph/DetectedObjects
         """
-        self.get_logger().info("Received synchronized messages")
+        
+        self.get_logger().info("Received synchronized mesages")
         
         # Read point cloud data
         self.get_logger().info("Converting to global frame...")
@@ -383,8 +381,9 @@ class ObjectLocationNode(Node):
 
 def main(args=None):
     """Main function to initialize node and start processing"""
+    
     rclpy.init(args=args)
-    node = ObjectLocationNode()
+    node = ObjectLocalizationNode()
     
     try:
         rclpy.spin(node)

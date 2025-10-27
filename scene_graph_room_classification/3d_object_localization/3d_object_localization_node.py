@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
 
-import rospy
+import rclpy
+from rclpy.node import Node
+
 import numpy as np
+
 from sensor_msgs.msg import Image, PointCloud2
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Point32
-import sensor_msgs.point_cloud2 as pc2
-from tf.transformations import euler_from_quaternion, quaternion_from_euler
+from sensor_msgs_py import point_cloud2 as pc2
 from scipy.spatial.transform import Rotation as R
 import message_filters
 from shapely.geometry import Point, Polygon
 from scene_graph.msg import DetectedObjects, GraphObjects, GraphObject
+
 import time
-
-
-# Global publishers
-debug_image_pub = None
-debug_depth_pub = None
-debug_odom_pub = None
-graph_objects_pub = None
 
 
 def convert_to_global_point(pose, point):
@@ -89,7 +85,6 @@ def compute_median(values):
     """Compute median of a list of values"""
     if len(values) == 0:
         raise ValueError("Cannot compute median of an empty list")
-    
     return np.median(values)
 
 
@@ -242,146 +237,163 @@ def rotate_and_transform_points_vectorized(points_array, pose):
     return points_array
 
 
-def synchronized_callback(image, depth_cloud, pose, detected_objects):
-    """
-    Callback for synchronized sensor data
+class ObjectLocationNode(Node):
+    def __init__(self):
+        super().__init__('object_location_node')
+        
+        # Create publishers
+        self.debug_image_pub = self.create_publisher(
+            Image, '/scene_graph/debug/image', 10)
+        self.debug_depth_pub = self.create_publisher(
+            PointCloud2, '/scene_graph/debug/depth', 10)
+        self.debug_odom_pub = self.create_publisher(
+            Odometry, '/scene_graph/debug/odom', 10)
+        self.graph_objects_pub = self.create_publisher(
+            GraphObjects, '/scene_graph/seen_graph_objects', 100)
+        
+        # Create subscribers with message filters
+        self.image_sub = message_filters.Subscriber(
+            self, Image, '/scene_graph/color/image_raw')
+        self.pointcloud_sub = message_filters.Subscriber(
+            self, PointCloud2, '/scene_graph/depth/points')
+        self.pose_sub = message_filters.Subscriber(
+            self, Odometry, '/scene_graph/odom')
+        self.detected_objects_sub = message_filters.Subscriber(
+            self, DetectedObjects, '/scene_graph/detected_objects')
+        
+        # Create approximate time synchronizer
+        self.ts = message_filters.ApproximateTimeSynchronizer(
+            [self.image_sub, self.pointcloud_sub, 
+             self.pose_sub, self.detected_objects_sub],
+            queue_size=10,
+            slop=0.1
+        )
+        self.ts.registerCallback(self.synchronized_callback)
+        
+        self.get_logger().info('Object Location Node initialized')
     
-    Args:
-        image: sensor_msgs/Image
-        depth_cloud: sensor_msgs/PointCloud2
-        pose: nav_msgs/Odometry
-        detected_objects: scene_graph/DetectedObjects
-    """
-    global debug_image_pub, debug_depth_pub, debug_odom_pub, graph_objects_pub
-    
-    rospy.loginfo("Received synchronized messages")
-    
-    # Read point cloud data
-    rospy.loginfo("Converting to global frame...")
-    start = time.time()
+    def synchronized_callback(self, image, depth_cloud, pose, detected_objects):
+        """
+        Callback for synchronized sensor data
+        
+        Args:
+            image: sensor_msgs/Image
+            depth_cloud: sensor_msgs/PointCloud2
+            pose: nav_msgs/Odometry
+            detected_objects: scene_graph/DetectedObjects
+        """
+        self.get_logger().info("Received synchronized messages")
+        
+        # Read point cloud data
+        self.get_logger().info("Converting to global frame...")
+        start = time.time()
+        
+        # Convert point cloud to numpy array in one operation
+        points_list = list(pc2.read_points(depth_cloud, skip_nans=False, 
+                                           field_names=("x", "y", "z")))
+        points_array = np.array(points_list)
+        
+        # Apply all transformations at once using vectorized operations
+        points_transformed = rotate_and_transform_points_vectorized(
+            points_array.copy(), pose)
+        
+        # Create output point cloud
+        header = depth_cloud.header
+        cloud_out = pc2.create_cloud_xyz32(header, points_transformed.tolist())
+        
+        # Publish debug topics
+        self.debug_image_pub.publish(image)
+        self.debug_depth_pub.publish(cloud_out)
+        self.debug_odom_pub.publish(pose)
+        
+        end = time.time()
+        print(f"Processing time: {end - start:.3f} seconds")
+        
+        # Process detected objects
+        self.get_logger().info("Processing detected objects...")
+        graph_objects = GraphObjects()
+        graph_objects.header.stamp = self.get_clock().now().to_msg()
+        
+        for detected_object in detected_objects.objects:
+            print(f"Detected object: {detected_object.class_name.data}")
+            
+            pointcloud_segment = []
+            
+            # Extract bounding box coordinates
+            bbox_y_min = int(detected_object.bounding_box[0].y)
+            bbox_y_max = int(detected_object.bounding_box[1].y)
+            bbox_x_min = int(detected_object.bounding_box[0].x)
+            bbox_x_max = int(detected_object.bounding_box[1].x)
+            
+            # Iterate through bounding box pixels
+            for y in range(bbox_y_min, bbox_y_max):
+                for x in range(bbox_x_min, bbox_x_max):
+                    # Check bounds
+                    if y < 0 or y >= image.height or x < 0 or x >= image.width:
+                        continue
+                    
+                    # Check if point is in segmentation polygon
+                    if not is_point_in_polygon(detected_object.segment, x, y):
+                        continue
+                    
+                    array_position = y * image.width + x
+                    
+                    # Check array bounds
+                    if array_position < 0 or array_position >= len(points_transformed):
+                        self.get_logger().warn(
+                            f"array_position out of bounds: {array_position} "
+                            f"max: {len(points_transformed)}")
+                        continue
+                    
+                    # Get transformed point
+                    px, py, pz = points_transformed[array_position]
+                    
+                    # Only add points with positive z
+                    if pz > 0.0:
+                        p = Point32()
+                        p.x = float(px)
+                        p.y = float(py)
+                        p.z = float(pz)
+                        pointcloud_segment.append(p)
+            
+            if len(pointcloud_segment) == 0:
+                continue
+            
+            # Compute center and filter points
+            center_point = compute_median_point(pointcloud_segment)
+            filtered_pointcloud_segment = get_nearest_points(
+                pointcloud_segment, center_point)
+            
+            if len(filtered_pointcloud_segment) == 0:
+                continue
+            
+            # Compute bounding box
+            bounding_box = compute_bounding_box(filtered_pointcloud_segment)
+            
+            # Create graph object
+            graph_object = GraphObject()
+            graph_object.name = detected_object.class_name
+            graph_object.bounding_box.append(bounding_box[0])
+            graph_object.bounding_box.append(bounding_box[1])
+            graph_objects.objects.append(graph_object)
+        
+        self.get_logger().info("Publishing graph objects...")
+        self.graph_objects_pub.publish(graph_objects)
 
-    # Convert point cloud to numpy array in one operation
-    points_array = np.array(list(pc2.read_points(depth_cloud, skip_nans=False, field_names=("x", "y", "z"))))
 
-    # Apply all transformations at once using vectorized operations
-    points_transformed = rotate_and_transform_points_vectorized(points_array, pose)
-
-    # Create output point cloud
-    header = depth_cloud.header
-    cloud_out = pc2.create_cloud_xyz32(header, points_transformed.tolist())
-
-    # Publish debug topics
-    debug_image_pub.publish(image)
-    debug_depth_pub.publish(cloud_out)
-    debug_odom_pub.publish(pose)
-
-    end = time.time()
-    print(f"Processing time: {end - start:.3f} seconds")
-    
-    # Process detected objects
-    rospy.loginfo("Processing detected objects...")
-    graph_objects = GraphObjects()
-    graph_objects.header.stamp = rospy.Time.now()
-    
-    for detected_object in detected_objects.objects:
-        print(f"Detected object: {detected_object.class_name}")
-        
-        pointcloud_segment = []
-        
-        # Extract bounding box coordinates
-        bbox_y_min = int(detected_object.bounding_box[0].y)
-        bbox_y_max = int(detected_object.bounding_box[1].y)
-        bbox_x_min = int(detected_object.bounding_box[0].x)
-        bbox_x_max = int(detected_object.bounding_box[1].x)
-        
-        # Iterate through bounding box pixels
-        for y in range(bbox_y_min, bbox_y_max):
-            for x in range(bbox_x_min, bbox_x_max):
-                # Check bounds
-                if y < 0 or y >= image.height or x < 0 or x >= image.width:
-                    continue
-                
-                # Check if point is in segmentation polygon
-                if not is_point_in_polygon(detected_object.segment, x, y):
-                    continue
-                
-                array_position = y * image.width + x
-                
-                # Check array bounds
-                if array_position < 0 or array_position >= len(points_transformed):
-                    rospy.logwarn(f"array_position out of bounds: {array_position} max: {len(points_transformed)}")
-                    continue
-                
-                # Get transformed point
-                px, py, pz = points_transformed[array_position]
-                
-                # Only add points with positive z
-                if pz > 0.0:
-                    p = Point32()
-                    p.x = px
-                    p.y = py
-                    p.z = pz
-                    pointcloud_segment.append(p)
-        
-        if len(pointcloud_segment) == 0:
-            continue
-        
-        # Compute center and filter points
-        center_point = compute_median_point(pointcloud_segment)
-        filtered_pointcloud_segment = get_nearest_points(pointcloud_segment, center_point)
-        
-        if len(filtered_pointcloud_segment) == 0:
-            continue
-        
-        # Compute bounding box
-        bounding_box = compute_bounding_box(filtered_pointcloud_segment)
-        
-        # Create graph object
-        graph_object = GraphObject()
-        graph_object.name = detected_object.class_name
-        graph_object.bounding_box.append(bounding_box[0])
-        graph_object.bounding_box.append(bounding_box[1])
-        
-        graph_objects.objects.append(graph_object)
-    
-    rospy.loginfo("Publishing graph objects...")
-    graph_objects_pub.publish(graph_objects)
-
-
-def main():
+def main(args=None):
     """Main function to initialize node and start processing"""
-    global debug_image_pub, debug_depth_pub, debug_odom_pub, graph_objects_pub
+    rclpy.init(args=args)
+    node = ObjectLocationNode()
     
-    # Initialize ROS node
-    rospy.init_node('synchronizer_node', anonymous=True)
-    
-    # Create publishers
-    debug_image_pub = rospy.Publisher('/scene_graph/debug/image', Image, queue_size=10)
-    debug_depth_pub = rospy.Publisher('/scene_graph/debug/depth', PointCloud2, queue_size=10)
-    debug_odom_pub = rospy.Publisher('/scene_graph/debug/odom', Odometry, queue_size=10)
-    graph_objects_pub = rospy.Publisher('/scene_graph/seen_graph_objects', GraphObjects, queue_size=100)
-    
-    # Create subscribers with message filters
-    image_sub = message_filters.Subscriber('/scene_graph/color/image_raw', Image)
-    pointcloud_sub = message_filters.Subscriber('/scene_graph/depth/points', PointCloud2)
-    pose_sub = message_filters.Subscriber('/scene_graph/odom', Odometry)
-    detected_objects_sub = message_filters.Subscriber('/scene_graph/detected_objects', DetectedObjects)
-    
-    # Create approximate time synchronizer
-    ts = message_filters.ApproximateTimeSynchronizer(
-        [image_sub, pointcloud_sub, pose_sub, detected_objects_sub],
-        queue_size=10,
-        slop=0.1
-    )
-    
-    ts.registerCallback(synchronized_callback)
-    
-    rospy.loginfo("Synchronizer node started")
-    rospy.spin()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except rospy.ROSInterruptException:
-        pass
+    main()

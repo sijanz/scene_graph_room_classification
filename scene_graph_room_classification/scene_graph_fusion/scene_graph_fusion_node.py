@@ -7,11 +7,10 @@ from rclpy.duration import Duration
 import networkx as nx
 import numpy as np
 import math
-from scene_graph.msg import GraphObject, GraphObjects, ClassifiedRoom, RoomPolygonList, RoomWithObjects
+from scene_graph_interfaces.msg import Object3DBoundingBox, Object3DBoundingBoxList, ClassifiedRoom, RoomPolygonList
 from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import Point32
+from geometry_msgs.msg import Point32, Point
 from scipy.spatial.transform import Rotation as R
-from std_msgs.msg import String, Int32, Bool
 import pickle
 import time
 from shapely.geometry import Polygon
@@ -44,19 +43,22 @@ class GraphManagementNode(Node):
         super().__init__('graph_management_node')
         
         # Create subscribers
-        self.create_subscription(GraphObjects, '/scene_graph/seen_graph_objects', 
-                                self.seen_objects_callback, 10)
-        self.create_subscription(RoomPolygonList, '/scene_graph/rooms', 
-                                self.rooms_callback, 10)
-        self.create_subscription(ClassifiedRoom, '/scene_graph/classified_room', 
-                                self.classified_room_callback, 10)
-        self.create_subscription(Bool, '/scene_graph/control', 
-                                self.control_callback, 10)
+        self.create_subscription(Object3DBoundingBoxList, '/scene_graph/bounding_boxes_3d', 
+                                self.bounding_boxes_callback, 10)
         
+        # FIXME: add later
+        # self.create_subscription(RoomPolygonList, '/scene_graph/rooms', 
+        #                         self.rooms_callback, 10)
+        # self.create_subscription(ClassifiedRoom, '/scene_graph/classified_room', 
+        #                         self.classified_room_callback, 10)
+        # self.create_subscription(Bool, '/scene_graph/control', 
+        #                         self.control_callback, 10)
+        
+        # FIXME: add room functionality later
         # Create publishers
-        self.objects_pub = self.create_publisher(GraphObjects, 'scene_graph/graph_objects', 10)
-        self.room_with_objects_pub = self.create_publisher(RoomWithObjects, 
-                                                           '/scene/graph/room_with_objects', 10)
+        # self.objects_pub = self.create_publisher(GraphObjects, 'scene_graph/graph_objects', 10)
+        # self.room_with_objects_pub = self.create_publisher(RoomWithObjects, 
+        #                                                    '/scene/graph/room_with_objects', 10)
         
         # Marker publishers
         self.object_bbox_markers_pub = self.create_publisher(MarkerArray, 
@@ -99,35 +101,39 @@ class GraphManagementNode(Node):
     
     def main_loop_callback(self):
         """Timer callback for main processing loop"""
+        
         self.graph_lock = True
         self.publish_markers()
         self.graph_lock = False
         
-        nodes = list(self.scene_graph.nodes)
-        
-        for node in nodes:
-            if node in self.scene_graph and 'data' in self.scene_graph.nodes[node]:
-                if type(self.scene_graph.nodes[node]['data']) is RoomNode:
-                    object_names_in_room = []
-                    children = list(self.scene_graph.neighbors(node))
+        # FIXME: add room functionality later
+        # nodes = list(self.scene_graph.nodes)
+        # for node in nodes:
+        #     if node in self.scene_graph and 'data' in self.scene_graph.nodes[node]:
+        #         if type(self.scene_graph.nodes[node]['data']) is RoomNode:
+        #             object_names_in_room = []
+        #             children = list(self.scene_graph.neighbors(node))
                     
-                    for c in children:
-                        if c in self.scene_graph and 'data' in self.scene_graph.nodes[c]:
-                            if type(self.scene_graph.nodes[c]['data']) is ObjectNode:
-                                object_names_in_room.append(
-                                    String(data=self.scene_graph.nodes[c]['data'].class_id))
+        #             for c in children:
+        #                 if c in self.scene_graph and 'data' in self.scene_graph.nodes[c]:
+        #                     if type(self.scene_graph.nodes[c]['data']) is ObjectNode:
+        #                         object_names_in_room.append(
+        #                             String(data=self.scene_graph.nodes[c]['data'].class_id))
                     
-                    room_with_objects_msg = RoomWithObjects()
-                    room_with_objects_msg.header.stamp = self.get_clock().now().to_msg()
-                    room_with_objects_msg.id = Int32(data=node)
-                    room_with_objects_msg.objects = object_names_in_room
-                    self.room_with_objects_pub.publish(room_with_objects_msg)
+                    
+        #             room_with_objects_msg = RoomWithObjects()
+        #             room_with_objects_msg.header.stamp = self.get_clock().now().to_msg()
+        #             room_with_objects_msg.id = Int32(data=node)
+        #             room_with_objects_msg.objects = object_names_in_room
+        #             self.room_with_objects_pub.publish(room_with_objects_msg)
         
         while self.graph_lock:
             time.sleep(0.01)
         
         self.graph_lock = True
         nodes = list(self.scene_graph.nodes)
+        
+        # FIXME: why rebuild all edges?
         self.scene_graph.remove_edges_from(list(self.scene_graph.edges))
         
         for object_node in nodes:
@@ -156,31 +162,31 @@ class GraphManagementNode(Node):
                                 self.scene_graph.nodes[object_node]['data'].polygon, 
                                 self.scene_graph.nodes[room_node]['data'].polygon):
                                 self.scene_graph.add_edge(room_node, object_node)
-        
-        for object_node in list(self.scene_graph.nodes):
-            if object_node in self.scene_graph and 'data' in self.scene_graph.nodes[object_node]:
-                if type(self.scene_graph.nodes[object_node]['data']) is ObjectNode:
-                    has_edge = False
+                                
+        # for object_node in list(self.scene_graph.nodes):
+        #     if object_node in self.scene_graph and 'data' in self.scene_graph.nodes[object_node]:
+        #         if type(self.scene_graph.nodes[object_node]['data']) is ObjectNode:
+        #             has_edge = False
                     
-                    for edge in list(self.scene_graph.edges):
-                        if edge[0] == object_node or edge[1] == object_node:
-                            has_edge = True
+        #             for edge in list(self.scene_graph.edges):
+        #                 if edge[0] == object_node or edge[1] == object_node:
+        #                     has_edge = True
                     
-                    if not has_edge:
-                        min_dist = np.inf
-                        min_node = 0
+        #             if not has_edge:
+        #                 min_dist = np.inf
+        #                 min_node = 0
                         
-                        for room_node in list(self.scene_graph.nodes):
-                            if room_node in self.scene_graph and 'data' in self.scene_graph.nodes[room_node]:
-                                if type(self.scene_graph.nodes[room_node]['data']) is RoomNode:
-                                    dist = self.euclidean_distance2d(
-                                        self.get_object_2d_position(self.scene_graph.nodes[object_node]['data']), 
-                                        self.scene_graph.nodes[room_node]['data'].center_point)
-                                    if dist < min_dist:
-                                        min_dist = dist
-                                        min_node = room_node
+        #                 for room_node in list(self.scene_graph.nodes):
+        #                     if room_node in self.scene_graph and 'data' in self.scene_graph.nodes[room_node]:
+        #                         if type(self.scene_graph.nodes[room_node]['data']) is RoomNode:
+        #                             dist = self.euclidean_distance2d(
+        #                                 self.get_object_2d_position(self.scene_graph.nodes[object_node]['data']), 
+        #                                 self.scene_graph.nodes[room_node]['data'].center_point)
+        #                             if dist < min_dist:
+        #                                 min_dist = dist
+        #                                 min_node = room_node
                         
-                        self.scene_graph.add_edge(min_node, object_node)
+        #                 self.scene_graph.add_edge(min_node, object_node)
         
         self.publish_markers()
         self.graph_lock = False
@@ -210,20 +216,20 @@ class GraphManagementNode(Node):
                 self.scene_graph.nodes[room[0]]['data'].class_id = msg.label.data
                 break
     
-    def seen_objects_callback(self, msg):
+    def bounding_boxes_callback(self, msg):
         """Callback for detected objects"""
+        
         # to disable interrupting the constructor
         if len(list(self.scene_graph.nodes)) < 2:
             return
         
-        if self.graph_lock:
-            time.sleep(0.1)
+        while self.graph_lock:
+            time.sleep(0.01)
         
         self.graph_lock = True
-        start_time = time.time()
         changed_room_ids = []
         
-        for object in msg.objects:
+        for object in msg.bbox:
             in_graph = self.is_object_in_graph(object)
             
             if in_graph == -1:
@@ -231,6 +237,7 @@ class GraphManagementNode(Node):
                     self.n, object.name.data, object.bounding_box))
                 
                 if not self.rooms_classified:
+                    
                     # add to default room first
                     self.scene_graph.add_edge(self.current_room_id, self.n)
                 else:
@@ -254,14 +261,11 @@ class GraphManagementNode(Node):
                 self.scene_graph.nodes[in_graph]['data'].bounding_box[0] = merged_box[0]
                 self.scene_graph.nodes[in_graph]['data'].bounding_box[1] = merged_box[1]
         
-        self.get_logger().info(f'[NODES]: {len(self.scene_graph.nodes)}')
-        self.get_logger().info(f'[TIMING]: {time.time() - start_time}')
-        
-        # self.export_scene_graph_to_json("/sgrc_ws/scene_graph_export.json")
         self.graph_lock = False
     
     def publish_markers(self):
         """Publishing of markers"""
+        
         # Publish bounding box markers for each object
         marker_array = MarkerArray()
         bounding_boxes = []
@@ -278,20 +282,21 @@ class GraphManagementNode(Node):
         for i, (point1, point2) in enumerate(bounding_boxes):
             marker = self.create_marker_from_bbox(point1, point2, i)
             marker_array.markers.append(marker)
+            
+        # FIXME: why publish object markers?        
+        # graph_objects_msg = GraphObjects()
+        # graph_objects_msg.header.stamp = self.get_clock().now().to_msg()
+        # graph_objects = []
         
-        graph_objects_msg = GraphObjects()
-        graph_objects_msg.header.stamp = self.get_clock().now().to_msg()
-        graph_objects = []
+        # for node in nodes:
+        #     if node in self.scene_graph and 'data' in self.scene_graph.nodes[node]:
+        #         if type(self.scene_graph.nodes[node]['data']) is ObjectNode:
+        #             graph_objects.append(GraphObject(
+        #                 String(data=self.scene_graph.nodes[node]['data'].class_id), 
+        #                 self.scene_graph.nodes[node]['data'].bounding_box))
         
-        for node in nodes:
-            if node in self.scene_graph and 'data' in self.scene_graph.nodes[node]:
-                if type(self.scene_graph.nodes[node]['data']) is ObjectNode:
-                    graph_objects.append(GraphObject(
-                        String(data=self.scene_graph.nodes[node]['data'].class_id), 
-                        self.scene_graph.nodes[node]['data'].bounding_box))
-        
-        graph_objects_msg.objects = graph_objects
-        self.objects_pub.publish(graph_objects_msg)
+        # graph_objects_msg.objects = graph_objects
+        # self.objects_pub.publish(graph_objects_msg)
         
         # Publish building markers
         building_maker_array = MarkerArray()
@@ -324,7 +329,8 @@ class GraphManagementNode(Node):
                         self.create_room_marker(
                             self.scene_graph.nodes[node]['data'].polygon, i))
                     self.old_marker_ids.append(i)
-        
+                    
+                    
         # Publish line markers
         line_marker_array = MarkerArray()
         
@@ -380,7 +386,7 @@ class GraphManagementNode(Node):
                 line_marker_array.markers.append(
                     self.create_line_marker(room_center_point_1, room_center_point_2, i))
                 i += 1
-        
+                
         # Publish text markers
         text_marker_array = MarkerArray()
         id = 0
@@ -410,10 +416,10 @@ class GraphManagementNode(Node):
                         self.create_text_marker(
                             position, self.scene_graph.nodes[node]['data'].class_id, id))
                     id += 1
-        
+                    
         # Publish all markers
         self.object_bbox_markers_pub.publish(marker_array)
-        self.objects_pub.publish(graph_objects_msg)
+        # self.objects_pub.publish(graph_objects_msg)
         self.building_markers_pub.publish(building_maker_array)
         self.room_markers_pub.publish(room_marker_array)
         self.line_markers_pub.publish(line_marker_array)
@@ -421,6 +427,8 @@ class GraphManagementNode(Node):
     
     def merge_bounding_boxes(self, min1, max1, min2, max2):
         """Merges two axis-aligned 3D bounding boxes"""
+        
+        # FIXME: merging doesn't work as intended
         min1 = (min1.x, min1.y, min1.z)
         min2 = (min2.x, min2.y, min2.z)
         max1 = (max1.x, max1.y, max1.z)
@@ -506,11 +514,12 @@ class GraphManagementNode(Node):
         text_marker.action = Marker.ADD
         text_marker.lifetime = Duration(seconds=0, nanoseconds=600000000).to_msg()
         
-        text_marker.pose.position = Point32(
-            x=position[0],
-            y=position[1],
-            z=position[2] + 0.8
-        )
+        pos = Point()
+        pos.x = position[0]
+        pos.y = position[1]
+        pos.z = position[2] + 0.8
+        
+        text_marker.pose.position = pos
         
         text_marker.scale.z = 0.7
         
@@ -576,9 +585,9 @@ class GraphManagementNode(Node):
             z1 = point1[2]
         if len(point2) > 2:
             z2 = point2[2]
-        
-        point1 = Point32(x=point1[0], y=point1[1], z=z1)
-        point2 = Point32(x=point2[0], y=point2[1], z=z2)
+            
+        point1 = Point(x=point1[0], y=point1[1], z=z1)
+        point2 = Point(x=point2[0], y=point2[1], z=z2)
         
         line_marker = Marker()
         line_marker.header.frame_id = "map"

@@ -2,389 +2,587 @@
 
 import rclpy
 from rclpy.node import Node
-import numpy as np
-from sensor_msgs.msg import Image, PointCloud2
+from sensor_msgs.msg import Image, CameraInfo
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Point32
-from sensor_msgs_py import point_cloud2 as pc2
-from scipy.spatial.transform import Rotation as R
-import message_filters
-from shapely.geometry import Point, Polygon
-from scene_graph_interfaces.msg import DetectedObjects, GraphObjects, GraphObject
+from std_msgs.msg import Header
+from cv_bridge import CvBridge
+import numpy as np
+from message_filters import ApproximateTimeSynchronizer, Subscriber
+from scene_graph_interfaces.msg import Object3DBoundingBox, Object3DBoundingBoxList, ObjectSegmentList
+from visualization_msgs.msg import Marker, MarkerArray
+from geometry_msgs.msg import Point
 import time
+import math
 
 
-def convert_to_global_point(pose, point):
-    """
-    Convert a local point to global frame using robot's pose
-    
-    Args:
-        pose: Odometry message containing robot pose
-        point: Point32 in local frame
-    
-    Returns:
-        Point32 in global frame
-    """
-    local_point = np.array([point.x, point.y, point.z])
-    
-    # Extract quaternion from pose
-    q = [pose.pose.pose.orientation.x,
-         pose.pose.pose.orientation.y,
-         pose.pose.pose.orientation.z,
-         pose.pose.pose.orientation.w]
-    
-    # Create rotation matrix from quaternion
-    rotation = R.from_quat(q)
-    rotation_matrix = rotation.as_matrix()
-    
-    # Rotate the local point by the robot's orientation
-    rotated_point = rotation_matrix @ local_point
-    
-    # Translate the rotated point by the robot's global position
-    global_point = Point32()
-    global_point.x = rotated_point[0] + pose.pose.pose.position.x
-    global_point.y = rotated_point[1] + pose.pose.pose.position.y
-    global_point.z = rotated_point[2] + pose.pose.pose.position.z
-    
-    return global_point
-
-
-def rotate_point(point, roll, pitch, yaw):
-    """
-    Rotate a point by given roll, pitch, yaw angles
-    
-    Args:
-        point: Point32 to rotate
-        roll: rotation around x-axis in radians
-        pitch: rotation around y-axis in radians
-        yaw: rotation around z-axis in radians
-    
-    Returns:
-        Rotated Point32
-    """
-    # Create rotation from euler angles
-    rotation = R.from_euler('xyz', [roll, pitch, yaw])
-    rotation_matrix = rotation.as_matrix()
-    
-    # Apply rotation
-    point_array = np.array([point.x, point.y, point.z])
-    rotated = rotation_matrix @ point_array
-    
-    result = Point32()
-    result.x = rotated[0]
-    result.y = rotated[1]
-    result.z = rotated[2]
-    
-    return result
-
-
-def compute_median(values):
-    """Compute median of a list of values"""
-    if len(values) == 0:
-        raise ValueError("Cannot compute median of an empty list")
-    return np.median(values)
-
-
-def compute_median_point(points):
-    """
-    Compute median point from a list of Point32 objects
-    
-    Args:
-        points: list of Point32 objects
-    
-    Returns:
-        Point32 representing median point
-    """
-    if len(points) == 0:
-        raise ValueError("The input list of points is empty")
-    
-    x_values = [p.x for p in points]
-    y_values = [p.y for p in points]
-    z_values = [p.z for p in points]
-    
-    median_point = Point32()
-    median_point.x = compute_median(x_values)
-    median_point.y = compute_median(y_values)
-    median_point.z = compute_median(z_values)
-    
-    return median_point
-
-
-def calculate_distance(p1, p2):
-    """Calculate Euclidean distance between two Point32 objects"""
-    return np.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2 + (p1.z - p2.z)**2)
-
-
-def is_point_in_polygon(polygon_points, px, py):
-    """
-    Check if a point is inside a polygon using Shapely
-    
-    Args:
-        polygon_points: list of Point32 defining polygon vertices
-        px, py: coordinates of point to check
-    
-    Returns:
-        True if point is inside or on boundary of polygon
-    """
-    if len(polygon_points) < 3:
-        return False
-    
-    # Create polygon from points
-    polygon_coords = [(p.x, p.y) for p in polygon_points]
-    polygon = Polygon(polygon_coords)
-    point = Point(px, py)
-    
-    # Check if point is inside or on boundary
-    return polygon.contains(point) or polygon.boundary.contains(point)
-
-
-def get_nearest_points(points, center):
-    """
-    Get the nearest 70% of points to a center point
-    
-    Args:
-        points: list of Point32 objects
-        center: Point32 center point
-    
-    Returns:
-        list of nearest Point32 objects (70% closest)
-    """
-    # Calculate distances
-    distances = [(calculate_distance(p, center), p) for p in points]
-    
-    # Sort by distance
-    distances.sort(key=lambda x: x[0])
-    
-    # Get closest 70%
-    num_points_to_select = int(len(distances) * 0.70)
-    nearest_points = [p for _, p in distances[:num_points_to_select]]
-    
-    return nearest_points
-
-
-def compute_bounding_box(points):
-    """
-    Compute axis-aligned bounding box from points
-    
-    Args:
-        points: list of Point32 objects
-    
-    Returns:
-        tuple of (min_point, max_point) as Point32 objects
-    """
-    if len(points) == 0:
-        raise ValueError("The input list of points is empty")
-    
-    min_point = Point32()
-    max_point = Point32()
-    
-    x_values = [p.x for p in points]
-    y_values = [p.y for p in points]
-    z_values = [p.z for p in points]
-    
-    min_point.x = min(x_values)
-    min_point.y = min(y_values)
-    min_point.z = min(z_values)
-    
-    max_point.x = max(x_values)
-    max_point.y = max(y_values)
-    max_point.z = max(z_values)
-    
-    return (min_point, max_point)
-
-
-def rotate_and_transform_points_vectorized(points_array, pose):
-    """
-    Vectorized version of point cloud transformation
-    
-    Args:
-        points_array: Nx3 numpy array of points
-        pose: Odometry message containing robot pose
-    
-    Returns:
-        Nx3 numpy array of transformed points
-    """
-    # Apply y-axis offset (vectorized)
-    points_array[:, 1] -= 0.65
-    
-    # First rotation: around z-axis by -pi/2
-    rot1 = R.from_euler('z', -np.pi/2)
-    points_array = rot1.apply(points_array)
-    
-    # Second rotation: around y-axis by pi/2
-    rot2 = R.from_euler('y', np.pi/2)
-    points_array = rot2.apply(points_array)
-    
-    # Convert to global frame
-    # Extract quaternion from pose
-    q = [pose.pose.pose.orientation.x,
-         pose.pose.pose.orientation.y,
-         pose.pose.pose.orientation.z,
-         pose.pose.pose.orientation.w]
-    
-    # Create rotation matrix from quaternion
-    rotation = R.from_quat(q)
-    
-    # Apply rotation and translation (vectorized)
-    points_array = rotation.apply(points_array)
-    points_array[:, 0] += pose.pose.pose.position.x
-    points_array[:, 1] += pose.pose.pose.position.y
-    points_array[:, 2] += pose.pose.pose.position.z
-    
-    return points_array
-
-
-class ObjectLocalizationNode(Node):
+class Object3DBoundingBoxNode(Node):
     def __init__(self):
-        
-        super().__init__('object_localization_node')
-        
-        # Create publishers
-        self.debug_image_pub = self.create_publisher(
-            Image, '/scene_graph/debug/image', 10)
-        self.debug_depth_pub = self.create_publisher(
-            PointCloud2, '/scene_graph/debug/depth', 10)
-        self.debug_odom_pub = self.create_publisher(
-            Odometry, '/scene_graph/debug/odom', 10)
-        self.graph_objects_pub = self.create_publisher(
-            GraphObjects, '/scene_graph/seen_graph_objects', 100)
-        
-        # Create subscribers with message filters
-        self.image_sub = message_filters.Subscriber(
-            self, Image, '/scene_graph/color/image_raw')
-        self.pointcloud_sub = message_filters.Subscriber(
-            self, PointCloud2, '/scene_graph/depth/points')
-        self.pose_sub = message_filters.Subscriber(
-            self, Odometry, '/scene_graph/odom')
-        self.detected_objects_sub = message_filters.Subscriber(
-            self, DetectedObjects, '/scene_graph/detected_objects')
-        
-        # Create approximate time synchronizer
-        self.ts = message_filters.ApproximateTimeSynchronizer(
-            [self.image_sub, self.pointcloud_sub, 
-             self.pose_sub, self.detected_objects_sub],
-            queue_size=10,
-            slop=0.1
-        )
-        self.ts.registerCallback(self.synchronized_callback)
-        
+        super().__init__('object_3d_bbox_node')
 
-    def synchronized_callback(self, image, depth_cloud, pose, detected_objects):
+        self.bridge = CvBridge()
+        self.camera_info = None
+        self.latest_odom = None
+
+        # Subscribe to camera info (only need one since they're synchronized)
+        self.camera_info_sub = self.create_subscription(
+            CameraInfo,
+            '/camera/color/camera_info',
+            self.camera_info_callback,
+            10
+        )
+
+        # Subscribe to odometry
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            '/odom',
+            self.odom_callback,
+            10
+        )
+
+        # Set up synchronized subscribers for images and detected objects
+        self.color_sub = Subscriber(self, Image, '/scene_graph/color/image_raw')
+        self.depth_sub = Subscriber(self, Image, '/scene_graph/depth/image_raw')
+        self.objects_sub = Subscriber(self, ObjectSegmentList, '/scene_graph/object_segments')
+
+        # Synchronize the three topics
+        self.sync = ApproximateTimeSynchronizer(
+            [self.color_sub, self.depth_sub, self.objects_sub],
+            queue_size=10,
+            slop=0.1  # 100ms tolerance
+        )
+        self.sync.registerCallback(self.synchronized_callback)
+        
+        # Publisher for bounding box marker array
+        self.bbox_marker_pub = self.create_publisher(
+            MarkerArray, 
+            '/scene_graph/debug/bounding_boxes', 
+            10
+        )
+        
+        self.pose_marker_pub = self.create_publisher(MarkerArray, "/scene_graph/viz/robot_pose", 10)
+        self.trajectory_points = []
+        self.max_trajectory_points = 1000  # Limit trajectory length
+
+        # Publisher for 3D bounding boxes
+        self.bbox_3d_pub = self.create_publisher(Object3DBoundingBoxList, '/scene_graph/bounding_boxes_3d', 10)
+
+        self.get_logger().info('Object 3D Bounding Box Node initialized')
+
+
+    def camera_info_callback(self, msg):
+        """Store camera intrinsics"""
+        if self.camera_info is None:
+            self.camera_info = msg
+            self.get_logger().info('Camera info received')
+
+
+    def odom_callback(self, msg):
+        """Store latest odometry"""
+        self.latest_odom = msg
+        
+        marker_array = MarkerArray()
+        
+        # 1. Create arrow marker for robot pose (position + orientation)
+        arrow_marker = self.create_pose_arrow(msg)
+        marker_array.markers.append(arrow_marker)
+        
+        # 2. Create sphere marker for position only
+        position_marker = self.create_position_sphere(msg)
+        marker_array.markers.append(position_marker)
+        
+        # 3. Create trajectory line (path history)
+        self.trajectory_points.append(msg.pose.pose.position)
+        if len(self.trajectory_points) > self.max_trajectory_points:
+            self.trajectory_points.pop(0)
+        
+        trajectory_marker = self.create_trajectory(msg.header.frame_id)
+        marker_array.markers.append(trajectory_marker)
+        
+        # Publish all markers
+        self.pose_marker_pub.publish(marker_array)
+        
+        
+    def create_pose_arrow(self, odom_msg):
+        """Create an ARROW marker showing position and orientation."""
+        marker = Marker()
+        marker.header = odom_msg.header
+        
+        # FIXME: use position from SLAM
+        marker.header.frame_id = "map"
+        
+        marker.ns = "robot_pose"
+        marker.id = 0
+        marker.type = Marker.ARROW
+        marker.action = Marker.ADD
+        
+        # Set pose from odometry
+        marker.pose = odom_msg.pose.pose
+        
+        # Arrow dimensions (length, width, height)
+        marker.scale.x = 0.5  # Arrow length
+        marker.scale.y = 0.05  # Arrow width
+        marker.scale.z = 0.05  # Arrow height
+        
+        # Color (Red arrow)
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0
+        
+        marker.lifetime = rclpy.duration.Duration(seconds=0).to_msg()  # Persistent
+        
+        return marker
+    
+    def create_position_sphere(self, odom_msg):
+        """Create a SPHERE marker at robot's position."""
+        marker = Marker()
+        marker.header = odom_msg.header
+        
+        # FIXME: use position from SLAM
+        marker.header.frame_id = "map"
+        
+        marker.ns = "robot_position"
+        marker.id = 1
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        
+        # Set position
+        marker.pose.position = odom_msg.pose.pose.position
+        marker.pose.orientation.w = 1.0
+        
+        # Sphere size
+        marker.scale.x = 0.2
+        marker.scale.y = 0.2
+        marker.scale.z = 0.2
+        
+        # Color (Green sphere)
+        marker.color.r = 0.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        marker.color.a = 0.8
+        
+        marker.lifetime = rclpy.duration.Duration(seconds=0).to_msg()
+        
+        return marker
+    
+    def create_trajectory(self, frame_id):
+        """Create a LINE_STRIP marker showing the robot's path."""
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = "trajectory"
+        marker.id = 2
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        
+        # Line width
+        marker.scale.x = 0.02
+        
+        # Color (Blue trajectory)
+        marker.color.r = 0.0
+        marker.color.g = 0.0
+        marker.color.b = 1.0
+        marker.color.a = 0.8
+        
+        # Add all trajectory points
+        for point in self.trajectory_points:
+            marker.points.append(point)
+        
+        marker.lifetime = rclpy.duration.Duration(seconds=0).to_msg()
+        
+        return marker
+
+
+    def pixel_to_3d(self, u, v, depth):
         """
-        Callback for synchronized sensor data
+        Convert 2D pixel coordinates to 3D point using camera intrinsics
+
+        Args:
+            u, v: pixel coordinates (x, y)
+            depth: depth value in meters
+
+        Returns:
+            tuple: (X, Y, Z) in camera frame, or None if invalid
+        """
+        if self.camera_info is None or depth <= 0 or np.isnan(depth) or np.isinf(depth):
+            return None
+
+        # Extract intrinsics from camera_info
+        fx = self.camera_info.k[0]  # Focal length x
+        fy = self.camera_info.k[4]  # Focal length y
+        cx = self.camera_info.k[2]  # Principal point x
+        cy = self.camera_info.k[5]  # Principal point y
+
+        # Convert to 3D coordinates in camera frame
+        Z = depth
+        X = (u - cx) * Z / fx
+        Y = (v - cy) * Z / fy
+
+        return (X, Y, Z)
+
+
+    def compute_3d_bounding_box(self, segment_pixels, depth_image):
+        """
+        Compute 3D bounding box from 2D segment pixels and depth information
+
+        Args:
+            segment_pixels: list of Point32 representing 2D pixel coordinates
+            depth_image: numpy array of depth values
+
+        Returns:
+            dict with 'center', 'min_point', 'max_point', 'corners' or None
+        """
+        if self.camera_info is None:
+            self.get_logger().warn('Camera info not available yet')
+            return None
+
+        points_3d = []
+
+        # Convert each segment pixel to 3D
+        for pixel in segment_pixels:
+            u = int(pixel.x)
+            v = int(pixel.y)
+
+            # Check bounds
+            if 0 <= v < depth_image.shape[0] and 0 <= u < depth_image.shape[1]:
+                depth = depth_image[v, u]
+
+                # Convert depth encoding if necessary
+                # Assuming depth is in millimeters (uint16)
+                if depth > 0:
+                    depth_meters = depth / 1000.0  # Convert mm to meters
+
+                    point_3d = self.pixel_to_3d(u, v, depth_meters)
+                    if point_3d is not None:
+                        points_3d.append(point_3d)
+
+        if len(points_3d) < 3:
+            self.get_logger().warn(f'Not enough valid 3D points: {len(points_3d)}')
+            return None
+
+        # Convert to numpy array for easier computation
+        points_3d = np.array(points_3d)
+
+        # Compute axis-aligned bounding box
+        min_point = np.min(points_3d, axis=0)
+        max_point = np.max(points_3d, axis=0)
+        center = (min_point + max_point) / 2.0
+        dimensions = max_point - min_point
+
+        # Compute 8 corners of the bounding box
+        corners = []
+        for i in range(2):
+            for j in range(2):
+                for k in range(2):
+                    corner = [
+                        min_point[0] if i == 0 else max_point[0],
+                        min_point[1] if j == 0 else max_point[1],
+                        min_point[2] if k == 0 else max_point[2]
+                    ]
+                    corners.append(corner)
+
+        return {
+            'center': center,
+            'min_point': min_point,
+            'max_point': max_point,
+            'dimensions': dimensions,
+            'corners': np.array(corners),
+            'num_points': len(points_3d)
+        }
+
+
+    def synchronized_callback(self, color_msg, depth_msg, objects_msg):
+        """
+        Process synchronized messages to create 3D bounding boxes
+        """
+        try:
+            # Convert ROS images to OpenCV format
+            color_image = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding='bgr8')
+
+            # Depth image - use 'passthrough' to preserve original encoding
+            depth_image = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
+
+            self.get_logger().debug(
+                f'Processing {len(objects_msg.objects)} objects, '
+                f'depth encoding: {depth_msg.encoding}'
+            )
+            
+            bbox_list_msg = Object3DBoundingBoxList()
+            bbox_list_msg.header.stamp = self.get_clock().now().to_msg()
+
+            # Process each detected object
+            for obj in objects_msg.objects:
+                self.get_logger().debug(f'Processing object: {obj.class_name.data}')
+
+                # Compute 3D bounding box from segment
+                start_time = time.time()
+                bbox_3d = self.compute_3d_bounding_box(obj.segment, depth_image)
+                end_time = time.time()
+                self.get_logger().info(f'Time to compute 3D bounding box: {end_time - start_time}')
+
+                if bbox_3d is not None:
+                    self.get_logger().info(
+                        f'Object "{obj.class_name.data}" - '
+                        f'Center: [{bbox_3d["center"][0]:.2f}, '
+                        f'{bbox_3d["center"][1]:.2f}, '
+                        f'{bbox_3d["center"][2]:.2f}], '
+                        f'Dimensions: [{bbox_3d["dimensions"][0]:.2f}, '
+                        f'{bbox_3d["dimensions"][1]:.2f}, '
+                        f'{bbox_3d["dimensions"][2]:.2f}] m, '
+                        f'Points: {bbox_3d["num_points"]}'
+                    )
+                    
+                    bbox_center = Point32()
+                    bbox_center.x = float(bbox_3d["center"][0])
+                    bbox_center.y = float(bbox_3d["center"][1])
+                    bbox_center.z = float(bbox_3d["center"][2])
+                    
+                    bbox_dimensions = Point32()
+                    bbox_dimensions.x = float(bbox_3d["dimensions"][0])
+                    bbox_dimensions.y = float(bbox_3d["dimensions"][1])
+                    bbox_dimensions.z = float(bbox_3d["dimensions"][2])
+                    
+                    # Calculate min point
+                    min_point = Point32()
+                    min_point.x = bbox_center.x - bbox_dimensions.x / 2.0
+                    min_point.y = bbox_center.y - bbox_dimensions.y / 2.0
+                    min_point.z = bbox_center.z - bbox_dimensions.z / 2.0
+
+                    # Calculate max point
+                    max_point = Point32()
+                    max_point.x = bbox_center.x + bbox_dimensions.x / 2.0
+                    max_point.y = bbox_center.y + bbox_dimensions.y / 2.0
+                    max_point.z = bbox_center.z + bbox_dimensions.z / 2.0
+                    
+                    # Transfom min and max points using the robot's pose
+                    min_point = self.transform_point(min_point, self.latest_odom.pose.pose)
+                    max_point = self.transform_point(max_point, self.latest_odom.pose.pose)
+
+
+                    # TODO: continue here
+                    # Here you would create and publish your 3D bounding box message
+                    # Example structure (you need to define this message type):
+                    bbox_msg = Object3DBoundingBox()
+                    # bbox_msg.header = objects_msg.header
+                    # bbox_msg.name = obj.class_name
+                    # bbox_msg.center.x = bbox_3d['center'][0]
+                    # bbox_msg.center.y = bbox_3d['center'][1]
+                    # bbox_msg.center.z = bbox_3d['center'][2]
+                    # bbox_msg.bounding_box.append(bbox_3d['center'][0])
+                    # bbox_msg.bounding_box.append(bbox_3d['center'][1])
+                    # bbox_msg.bounding_box.append(bbox_3d['center'][2])
+                    # bbox_msg.bounding_box.append(bbox_3d['dimensions'][0])
+                    # bbox_msg.bounding_box.append(bbox_3d['dimensions'][1])
+                    # bbox_msg.bounding_box.append(bbox_3d['dimensions'][2])
+                    # self.bbox_3d_pub.publish(bbox_msg)
+                    
+                    bbox_msg.name = obj.class_name
+                    
+                    bbox_msg.bounding_box.append(min_point)
+                    bbox_msg.bounding_box.append(max_point)
+                    
+                    bbox_list_msg.bbox.append(bbox_msg)
+                    
+                    
+                else:
+                    self.get_logger().warn(
+                        f'Could not compute 3D bbox for object: {obj.class_name.data}'
+                    )
+                    
+            self.publish_boxes(bbox_list_msg)
+                    
+            self.bbox_3d_pub.publish(bbox_list_msg)
+
+        except Exception as e:
+            self.get_logger().error(f'Error in synchronized callback: {str(e)}')
+            
+    def quaternion_to_rotation_matrix(self, q):
+        """
+        Convert quaternion to 3x3 rotation matrix.
         
         Args:
-            image: sensor_msgs/Image
-            depth_cloud: sensor_msgs/PointCloud2
-            pose: nav_msgs/Odometry
-            detected_objects: scene_graph/DetectedObjects
+            q: geometry_msgs/Quaternion
+        Returns:
+            3x3 numpy array rotation matrix
+        """
+        # Normalize quaternion
+        norm = math.sqrt(q.x**2 + q.y**2 + q.z**2 + q.w**2)
+        q.x /= norm
+        q.y /= norm
+        q.z /= norm
+        q.w /= norm
+        
+        # Quaternion to rotation matrix
+        R = np.array([
+            [1 - 2*(q.y**2 + q.z**2),     2*(q.x*q.y - q.w*q.z),     2*(q.x*q.z + q.w*q.y)],
+            [    2*(q.x*q.y + q.w*q.z), 1 - 2*(q.x**2 + q.z**2),     2*(q.y*q.z - q.w*q.x)],
+            [    2*(q.x*q.z - q.w*q.y),     2*(q.y*q.z + q.w*q.x), 1 - 2*(q.x**2 + q.y**2)]
+        ])
+        
+        return R
+    
+    def transform_point(self, point, odom_pose):
+        """
+        Transform a Point32 from robot's local frame to odom frame.
+        
+        Args:
+            point: Point32 in robot's local frame
+            odom_pose: Pose from odometry message
+        Returns:
+            Point32 in odom frame
         """
         
-        self.get_logger().info("Received synchronized mesages")
+        # FIXME: why is this necessary?
+        odom_pose.orientation.z = odom_pose.orientation.z - np.pi / 2
+        odom_pose.orientation.y = odom_pose.orientation.y + np.pi / 2
         
-        # Read point cloud data
-        self.get_logger().info("Converting to global frame...")
-        start = time.time()
+        # Get rotation matrix from quaternion
+        R = self.quaternion_to_rotation_matrix(odom_pose.orientation)
         
-        # Convert point cloud to numpy array in one operation
-        points_list = list(pc2.read_points(depth_cloud, skip_nans=False, 
-                                           field_names=("x", "y", "z")))
-        points_array = np.array(points_list)
+        # Point as numpy array
+        p_local = np.array([point.x, point.y, point.z])
         
-        # Apply all transformations at once using vectorized operations
-        points_transformed = rotate_and_transform_points_vectorized(
-            points_array.copy(), pose)
+        # Apply rotation
+        p_rotated = R @ p_local
         
-        # Create output point cloud
-        header = depth_cloud.header
-        cloud_out = pc2.create_cloud_xyz32(header, points_transformed.tolist())
+        # Apply translation
+        p_global = p_rotated + np.array([
+            odom_pose.position.x,
+            odom_pose.position.y,
+            odom_pose.position.z
+        ])
         
-        # Publish debug topics
-        self.debug_image_pub.publish(image)
-        self.debug_depth_pub.publish(cloud_out)
-        self.debug_odom_pub.publish(pose)
+        # Create transformed point
+        transformed = Point32()
+        transformed.x = float(p_global[0])
+        transformed.y = float(p_global[1])
+        transformed.z = float(p_global[2])
         
-        end = time.time()
-        print(f"Processing time: {end - start:.3f} seconds")
-        
-        # Process detected objects
-        self.get_logger().info("Processing detected objects...")
-        graph_objects = GraphObjects()
-        graph_objects.header.stamp = self.get_clock().now().to_msg()
-        
-        for detected_object in detected_objects.objects:
-            print(f"Detected object: {detected_object.class_name.data}")
+        return transformed
+         
             
-            pointcloud_segment = []
-            
-            # Extract bounding box coordinates
-            bbox_y_min = int(detected_object.bounding_box[0].y)
-            bbox_y_max = int(detected_object.bounding_box[1].y)
-            bbox_x_min = int(detected_object.bounding_box[0].x)
-            bbox_x_max = int(detected_object.bounding_box[1].x)
-            
-            # Iterate through bounding box pixels
-            for y in range(bbox_y_min, bbox_y_max):
-                for x in range(bbox_x_min, bbox_x_max):
-                    # Check bounds
-                    if y < 0 or y >= image.height or x < 0 or x >= image.width:
-                        continue
-                    
-                    # Check if point is in segmentation polygon
-                    if not is_point_in_polygon(detected_object.segment, x, y):
-                        continue
-                    
-                    array_position = y * image.width + x
-                    
-                    # Check array bounds
-                    if array_position < 0 or array_position >= len(points_transformed):
-                        self.get_logger().warn(
-                            f"array_position out of bounds: {array_position} "
-                            f"max: {len(points_transformed)}")
-                        continue
-                    
-                    # Get transformed point
-                    px, py, pz = points_transformed[array_position]
-                    
-                    # Only add points with positive z
-                    if pz > 0.0:
-                        p = Point32()
-                        p.x = float(px)
-                        p.y = float(py)
-                        p.z = float(pz)
-                        pointcloud_segment.append(p)
-            
-            if len(pointcloud_segment) == 0:
-                continue
-            
-            # Compute center and filter points
-            center_point = compute_median_point(pointcloud_segment)
-            filtered_pointcloud_segment = get_nearest_points(
-                pointcloud_segment, center_point)
-            
-            if len(filtered_pointcloud_segment) == 0:
-                continue
-            
-            # Compute bounding box
-            bounding_box = compute_bounding_box(filtered_pointcloud_segment)
-            
-            # Create graph object
-            graph_object = GraphObject()
-            graph_object.name = detected_object.class_name
-            graph_object.bounding_box.append(bounding_box[0])
-            graph_object.bounding_box.append(bounding_box[1])
-            graph_objects.objects.append(graph_object)
+    def create_bbox_marker(self, min_pt, max_pt, marker_id, frame_id='map', 
+                          color=None, namespace='bounding_boxes'):
+        """
+        Create a LINE_LIST marker for a bounding box.
         
-        self.get_logger().info("Publishing graph objects...")
-        self.graph_objects_pub.publish(graph_objects)
+        Args:
+            min_pt: tuple (x, y, z) - minimum corner
+            max_pt: tuple (x, y, z) - maximum corner
+            marker_id: unique ID for this marker
+            frame_id: reference frame
+            color: tuple (r, g, b, a) - color values 0-1
+            namespace: marker namespace
+        """
+        
+        # Extract coordinates from Point32
+        x_min, y_min, z_min = min_pt.x, min_pt.y, min_pt.z
+        x_max, y_max, z_max = max_pt.x, max_pt.y, max_pt.z
+        
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = namespace
+        marker.id = marker_id
+        marker.type = Marker.CUBE
+        marker.pose.position.x = (min_pt.x + max_pt.x) / 2
+        marker.pose.position.y = (min_pt.z + max_pt.y) / 2
+        marker.pose.position.z = (min_pt.z + max_pt.z) / 2
+        marker.scale.x = max_pt.x - min_pt.x
+        marker.scale.y = max_pt.y - min_pt.y
+        marker.scale.z = max_pt.z - min_pt.z
+        marker.color.r = color[0]
+        marker.color.g = color[1]
+        marker.color.b = color[2]
+        marker.color.a = 0.3  # Semi-transparent
+        # marker.type = Marker.LINE_LIST
+        # marker.action = Marker.ADD
+        
+        # # Line width
+        # marker.scale.x = 0.02
+        
+        # # Color (default green)
+        # if color is None:
+        #     color = (0.0, 1.0, 0.0, 1.0)
+        # marker.color.r = color[0]
+        # marker.color.g = color[1]
+        # marker.color.b = color[2]
+        # marker.color.a = color[3]
+        
+
+        
+        # # Define 8 corners of the bounding box
+        # # Bottom face corners
+        # p0 = Point(x=x_min, y=y_min, z=z_min)
+        # p1 = Point(x=x_max, y=y_min, z=z_min)
+        # p2 = Point(x=x_max, y=y_max, z=z_min)
+        # p3 = Point(x=x_min, y=y_max, z=z_min)
+        
+        # # Top face corners
+        # p4 = Point(x=x_min, y=y_min, z=z_max)
+        # p5 = Point(x=x_max, y=y_min, z=z_max)
+        # p6 = Point(x=x_max, y=y_max, z=z_max)
+        # p7 = Point(x=x_min, y=y_max, z=z_max)
+        
+        # # Add lines for all 12 edges of the box
+        # # Bottom face (4 edges)
+        # marker.points.extend([p0, p1, p1, p2, p2, p3, p3, p0])
+        
+        # # Top face (4 edges)
+        # marker.points.extend([p4, p5, p5, p6, p6, p7, p7, p4])
+        
+        # # Vertical edges (4 edges)
+        # marker.points.extend([p0, p4, p1, p5, p2, p6, p3, p7])
+        
+        return marker
+        
+    
+    def publish_boxes(self, bbox_msg):
+        """Example: Publish multiple bounding boxes."""
+        marker_array = MarkerArray()
+        
+        # Example bounding boxes (min_point, max_point)
+        # bboxes = [
+        #     ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),  # Box 1
+        #     ((2.0, 0.0, 0.0), (3.0, 0.5, 0.5)),  # Box 2
+        #     ((-1.0, -1.0, 0.0), (0.0, 0.0, 2.0)) # Box 3
+        # ]
+        
+        # Different colors for each box
+        # colors = [
+        #     (1.0, 0.0, 0.0, 1.0),  # Red
+        #     (0.0, 1.0, 0.0, 1.0),  # Green
+        #     (0.0, 0.0, 1.0, 1.0)   # Blue
+        # ]
+        
+        # for i, (min_pt, max_pt) in enumerate(bboxes):
+        #     marker = self.create_bbox_marker(
+        #         min_pt, max_pt, 
+        #         marker_id=i,
+        #         frame_id='map',
+        #         color=(1.0, 0.0, 0.0, 1.0)
+        #     )
+        #     marker_array.markers.append(marker)
+        
+        # print("bbox_msg:", bbox_msg)
+            
+        for i, (bbox) in enumerate(bbox_msg.bbox):
+            marker = self.create_bbox_marker(
+                bbox.bounding_box[0], bbox.bounding_box[1], 
+                marker_id=i,
+                frame_id='map',
+                color=(1.0, 0.0, 0.0, 1.0)
+            )
+            marker_array.markers.append(marker)
+        
+        self.bbox_marker_pub.publish(marker_array)
 
 
 def main(args=None):
-    """Main function to initialize node and start processing"""
-    
     rclpy.init(args=args)
-    node = ObjectLocalizationNode()
-    
+    node = Object3DBoundingBoxNode()
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

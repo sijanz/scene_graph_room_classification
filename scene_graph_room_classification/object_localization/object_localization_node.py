@@ -5,13 +5,11 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Point32
-from std_msgs.msg import Header
 from cv_bridge import CvBridge
 import numpy as np
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from scene_graph_interfaces.msg import Object3DBoundingBox, Object3DBoundingBoxList, ObjectSegmentList
 from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import Point
 import time
 import math
 
@@ -360,25 +358,8 @@ class Object3DBoundingBoxNode(Node):
                     max_point = self.transform_point(max_point, self.latest_odom.pose.pose)
 
 
-                    # TODO: continue here
-                    # Here you would create and publish your 3D bounding box message
-                    # Example structure (you need to define this message type):
                     bbox_msg = Object3DBoundingBox()
-                    # bbox_msg.header = objects_msg.header
-                    # bbox_msg.name = obj.class_name
-                    # bbox_msg.center.x = bbox_3d['center'][0]
-                    # bbox_msg.center.y = bbox_3d['center'][1]
-                    # bbox_msg.center.z = bbox_3d['center'][2]
-                    # bbox_msg.bounding_box.append(bbox_3d['center'][0])
-                    # bbox_msg.bounding_box.append(bbox_3d['center'][1])
-                    # bbox_msg.bounding_box.append(bbox_3d['center'][2])
-                    # bbox_msg.bounding_box.append(bbox_3d['dimensions'][0])
-                    # bbox_msg.bounding_box.append(bbox_3d['dimensions'][1])
-                    # bbox_msg.bounding_box.append(bbox_3d['dimensions'][2])
-                    # self.bbox_3d_pub.publish(bbox_msg)
-                    
                     bbox_msg.name = obj.class_name
-                    
                     bbox_msg.bounding_box.append(min_point)
                     bbox_msg.bounding_box.append(max_point)
                     
@@ -496,77 +477,14 @@ class Object3DBoundingBoxNode(Node):
         marker.color.g = color[1]
         marker.color.b = color[2]
         marker.color.a = 0.3  # Semi-transparent
-        # marker.type = Marker.LINE_LIST
-        # marker.action = Marker.ADD
-        
-        # # Line width
-        # marker.scale.x = 0.02
-        
-        # # Color (default green)
-        # if color is None:
-        #     color = (0.0, 1.0, 0.0, 1.0)
-        # marker.color.r = color[0]
-        # marker.color.g = color[1]
-        # marker.color.b = color[2]
-        # marker.color.a = color[3]
-        
-
-        
-        # # Define 8 corners of the bounding box
-        # # Bottom face corners
-        # p0 = Point(x=x_min, y=y_min, z=z_min)
-        # p1 = Point(x=x_max, y=y_min, z=z_min)
-        # p2 = Point(x=x_max, y=y_max, z=z_min)
-        # p3 = Point(x=x_min, y=y_max, z=z_min)
-        
-        # # Top face corners
-        # p4 = Point(x=x_min, y=y_min, z=z_max)
-        # p5 = Point(x=x_max, y=y_min, z=z_max)
-        # p6 = Point(x=x_max, y=y_max, z=z_max)
-        # p7 = Point(x=x_min, y=y_max, z=z_max)
-        
-        # # Add lines for all 12 edges of the box
-        # # Bottom face (4 edges)
-        # marker.points.extend([p0, p1, p1, p2, p2, p3, p3, p0])
-        
-        # # Top face (4 edges)
-        # marker.points.extend([p4, p5, p5, p6, p6, p7, p7, p4])
-        
-        # # Vertical edges (4 edges)
-        # marker.points.extend([p0, p4, p1, p5, p2, p6, p3, p7])
         
         return marker
         
     
     def publish_boxes(self, bbox_msg):
-        """Example: Publish multiple bounding boxes."""
-        marker_array = MarkerArray()
         
-        # Example bounding boxes (min_point, max_point)
-        # bboxes = [
-        #     ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),  # Box 1
-        #     ((2.0, 0.0, 0.0), (3.0, 0.5, 0.5)),  # Box 2
-        #     ((-1.0, -1.0, 0.0), (0.0, 0.0, 2.0)) # Box 3
-        # ]
-        
-        # Different colors for each box
-        # colors = [
-        #     (1.0, 0.0, 0.0, 1.0),  # Red
-        #     (0.0, 1.0, 0.0, 1.0),  # Green
-        #     (0.0, 0.0, 1.0, 1.0)   # Blue
-        # ]
-        
-        # for i, (min_pt, max_pt) in enumerate(bboxes):
-        #     marker = self.create_bbox_marker(
-        #         min_pt, max_pt, 
-        #         marker_id=i,
-        #         frame_id='map',
-        #         color=(1.0, 0.0, 0.0, 1.0)
-        #     )
-        #     marker_array.markers.append(marker)
-        
-        # print("bbox_msg:", bbox_msg)
-            
+        marker_array = MarkerArray()     
+           
         for i, (bbox) in enumerate(bbox_msg.bbox):
             marker = self.create_bbox_marker(
                 bbox.bounding_box[0], bbox.bounding_box[1], 

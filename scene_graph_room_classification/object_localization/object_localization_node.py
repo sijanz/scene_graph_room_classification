@@ -223,6 +223,7 @@ class Object3DBoundingBoxNode(Node):
     def compute_3d_bounding_box(self, segment_pixels, depth_image):
         """
         Compute 3D bounding box from 2D segment pixels and depth information
+        using Statistical Outlier Removal (SOR) filtering
 
         Args:
             segment_pixels: list of Point32 representing 2D pixel coordinates
@@ -262,9 +263,45 @@ class Object3DBoundingBoxNode(Node):
         # Convert to numpy array for easier computation
         points_3d = np.array(points_3d)
 
-        # Compute axis-aligned bounding box
-        min_point = np.min(points_3d, axis=0)
-        max_point = np.max(points_3d, axis=0)
+        # Statistical Outlier Removal (SOR) filter
+        k_neighbors = min(10, len(points_3d) - 1)  # Use 10 neighbors or max available
+        std_multiplier = 1.0  # Standard deviation multiplier for threshold
+
+        if len(points_3d) > k_neighbors:
+            from scipy.spatial import KDTree
+            
+            # Build KD-tree for efficient nearest neighbor search
+            tree = KDTree(points_3d)
+            
+            mean_distances = []
+            # For each point, compute mean distance to k nearest neighbors
+            for point in points_3d:
+                # Query k+1 neighbors (includes the point itself)
+                distances, _ = tree.query(point, k=k_neighbors+1)
+                # Exclude distance to itself (first element is always 0)
+                mean_distances.append(np.mean(distances[1:]))
+            
+            mean_distances = np.array(mean_distances)
+            
+            # Calculate global statistics of mean distances
+            global_mean = np.mean(mean_distances)
+            global_std = np.std(mean_distances)
+            
+            # Remove points whose mean neighbor distance exceeds threshold
+            threshold = global_mean + std_multiplier * global_std
+            inlier_mask = mean_distances <= threshold
+            points_3d_filtered = points_3d[inlier_mask]
+            
+            if len(points_3d_filtered) < 3:
+                self.get_logger().warn(f'Not enough points after filtering: {len(points_3d_filtered)}')
+                return None
+        else:
+            points_3d_filtered = points_3d
+            self.get_logger().info('Skipping SOR filter: not enough points for k-NN')
+
+        # Compute axis-aligned bounding box on filtered points
+        min_point = np.min(points_3d_filtered, axis=0)
+        max_point = np.max(points_3d_filtered, axis=0)
         center = (min_point + max_point) / 2.0
         dimensions = max_point - min_point
 
@@ -286,7 +323,9 @@ class Object3DBoundingBoxNode(Node):
             'max_point': max_point,
             'dimensions': dimensions,
             'corners': np.array(corners),
-            'num_points': len(points_3d)
+            'num_points': len(points_3d_filtered),
+            'num_points_original': len(points_3d),
+            'num_outliers_removed': len(points_3d) - len(points_3d_filtered)
         }
 
 

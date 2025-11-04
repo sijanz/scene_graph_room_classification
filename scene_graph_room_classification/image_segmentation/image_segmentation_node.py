@@ -42,12 +42,11 @@ class ImageSegmentationNode(Node):
         # Subscribe to the camera image, depth and odometry topic
         self.image_sub = message_filters.Subscriber(self, Image, '/camera/color/image_raw')
         self.depth_image_sub = message_filters.Subscriber(self, Image, '/camera/depth/image_raw')
-        self.depth_sub = message_filters.Subscriber(self, PointCloud2, '/camera/depth/points')
         self.odom_sub = message_filters.Subscriber(self, Odometry, '/odom')
         
         # Approximate Time Synchronizer allows slight time differences between topics
         self.ts = message_filters.ApproximateTimeSynchronizer(
-            [self.image_sub, self.depth_image_sub, self.depth_sub, self.odom_sub], 
+            [self.image_sub, self.depth_image_sub, self.odom_sub], 
             queue_size=100, 
             slop=0.1
         )
@@ -56,13 +55,12 @@ class ImageSegmentationNode(Node):
         # Create publishers for synchronized topics, as well as for debugging and the detected objects
         self.image_pub = self.create_publisher(Image, '/scene_graph/color/image_raw', 1)
         self.depth_image_pub = self.create_publisher(Image, '/scene_graph/depth/image_raw', 1)
-        self.segmented_image_pub = self.create_publisher(Image, '/camera/color/segmented_image', 1)
-        self.depth_pub = self.create_publisher(PointCloud2, '/scene_graph/depth/points', 1)
+        self.segmented_image_pub = self.create_publisher(Image, '/scene_graph/debug/segmented_image', 1)
         self.odom_pub = self.create_publisher(Odometry, '/scene_graph/odom', 1)
         self.detected_objects_pub = self.create_publisher(ObjectSegmentList, '/scene_graph/object_segments', 10)
 
 
-    def synchronized_callback(self, ros_image, depth_msg, depth_point_msg, odom_msg):
+    def synchronized_callback(self, ros_image, depth_msg, odom_msg):
         """
         Callback for synchronized sensor data
         
@@ -155,19 +153,16 @@ class ImageSegmentationNode(Node):
         detected_objects_msg.header.stamp = self.get_clock().now().to_msg()
         
         depth_msg.header.stamp = self.get_clock().now().to_msg()
-        depth_point_msg.header.stamp = self.get_clock().now().to_msg()
         self.rgb_image.header.stamp = self.get_clock().now().to_msg()
         odom_msg.header.stamp = self.get_clock().now().to_msg()
         
         depth_msg.header.frame_id = 'map'
         self.rgb_image.header.frame_id = 'map'
-        depth_point_msg.header.frame_id = 'map'
         odom_msg.header.frame_id = 'map'
         
         # Publish depth image and odometry together with segmented image for synchronization
         self.image_pub.publish(self.rgb_image)
         self.depth_image_pub.publish(depth_msg)
-        self.depth_pub.publish(depth_point_msg)
         self.odom_pub.publish(odom_msg)
         self.detected_objects_pub.publish(detected_objects_msg)
 

@@ -31,16 +31,11 @@ class Object3DBoundingBoxNode(Node):
         )
 
         # Subscribe to odometry
-        self.odom_sub = self.create_subscription(
-            Odometry,
-            '/odom',
-            self.odom_callback,
-            10
-        )
+        self.odom_sub = self.create_subscription(Odometry, '/scene_graph/sync/odom', self.odom_callback, 10)
 
         # Set up synchronized subscribers for images and detected objects
-        self.color_sub = Subscriber(self, Image, '/scene_graph/color/image_raw')
-        self.depth_sub = Subscriber(self, Image, '/scene_graph/depth/image_raw')
+        self.color_sub = Subscriber(self, Image, '/scene_graph/sync/color/image_raw')
+        self.depth_sub = Subscriber(self, Image, '/scene_graph/sync/depth/image_raw')
         self.objects_sub = Subscriber(self, ObjectSegmentList, '/scene_graph/object_segments')
 
         # Synchronize the three topics
@@ -265,7 +260,7 @@ class Object3DBoundingBoxNode(Node):
 
         # Statistical Outlier Removal (SOR) filter
         k_neighbors = min(10, len(points_3d) - 1)  # Use 10 neighbors or max available
-        std_multiplier = 1.0  # Standard deviation multiplier for threshold
+        std_multiplier = 0.1  # Standard deviation multiplier for threshold
 
         if len(points_3d) > k_neighbors:
             from scipy.spatial import KDTree

@@ -53,10 +53,10 @@ class ImageSegmentationNode(Node):
         self.ts.registerCallback(self.synchronized_callback)
         
         # Create publishers for synchronized topics, as well as for debugging and the detected objects
-        self.image_pub = self.create_publisher(Image, '/scene_graph/color/image_raw', 1)
-        self.depth_image_pub = self.create_publisher(Image, '/scene_graph/depth/image_raw', 1)
+        self.image_pub = self.create_publisher(Image, '/scene_graph/sync/color/image_raw', 1)
+        self.depth_image_pub = self.create_publisher(Image, '/scene_graph/sync/depth/image_raw', 1)
+        self.odom_pub = self.create_publisher(Odometry, '/scene_graph/sync/odom', 1)
         self.segmented_image_pub = self.create_publisher(Image, '/scene_graph/debug/segmented_image', 1)
-        self.odom_pub = self.create_publisher(Odometry, '/scene_graph/odom', 1)
         self.detected_objects_pub = self.create_publisher(ObjectSegmentList, '/scene_graph/object_segments', 10)
 
 

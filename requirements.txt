@@ -1,6 +1,6 @@
 ultralytics
 opencv-python
-numpy
+numpy==1.26.4
 networkx
 scipy
 shapely

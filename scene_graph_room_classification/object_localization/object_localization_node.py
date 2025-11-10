@@ -561,19 +561,39 @@ class Object3DBoundingBoxNode(Node):
         Returns:
             Point32: Transformed point in map frame
         """
-        # FIXME: These manual angle adjustments suggest a frame transform issue
-        # Should use proper TF2 transforms instead
-        odom_pose.orientation.z = odom_pose.orientation.z - np.pi / 2
-        odom_pose.orientation.y = odom_pose.orientation.y + np.pi / 2
-
         # Get rotation matrix from quaternion
         R = self.quaternion_to_rotation_matrix(odom_pose.orientation)
 
         # Convert point to numpy array for matrix operations
         p_local = np.array([point.x, point.y, point.z])
 
-        # Apply rotation: p_rotated = R * p_local
-        p_rotated = R @ p_local
+        # FIXME: Why do we get this rotation? Best solve it using static transforms
+        # Create rotation matrix for -90° around X and -90° around Z
+        roll = np.radians(-90.0)   # -90° around X-axis
+        yaw = np.radians(-90.0)    # -90° around Z-axis
+        
+        # Rotation matrix around X-axis (roll)
+        Rx = np.array([
+            [1, 0, 0],
+            [0, np.cos(roll), -np.sin(roll)],
+            [0, np.sin(roll), np.cos(roll)]
+        ])
+        
+        # Rotation matrix around Z-axis (yaw)
+        Rz = np.array([
+            [np.cos(yaw), -np.sin(yaw), 0],
+            [np.sin(yaw), np.cos(yaw), 0],
+            [0, 0, 1]
+        ])
+        
+        # Combined camera frame correction: Rz * Rx
+        R_camera_correction = Rz @ Rx
+        
+        # Apply camera frame correction first
+        p_corrected = R_camera_correction @ p_local
+
+        # Apply odometry rotation: p_rotated = R * p_corrected
+        p_rotated = R @ p_corrected
 
         # Apply translation: p_global = p_rotated + robot_position
         p_global = p_rotated + np.array([
